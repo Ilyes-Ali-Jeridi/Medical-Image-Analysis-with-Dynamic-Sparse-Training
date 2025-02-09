@@ -1,3 +1,4 @@
+#main.py
 import os
 import logging
 import torch
@@ -37,6 +38,7 @@ def main():
     parser.add_argument('--eval', action='store_true', help='Run evaluation')
     parser.add_argument('--deploy', action='store_true', help='Deploy model')
     parser.add_argument('--checkpoint-dir', type=str, default='checkpoints', help='Checkpoint directory')
+    parser.add_argument('--cache-dir', type=str, default='/tmp/mimic_cache', help='Cache directory')
     args = parser.parse_args()
 
     # Setup logging
@@ -44,38 +46,37 @@ def main():
     logger = logging.getLogger(__name__)
 
     try:
+        setup_logging()
+        logger = logging.getLogger(__name__)
+        
         # Initialize config
         config = Config()
         
         # Configure device and distributed training
         device = A100Optimizer.configure_device()
+        A100Optimizer.optimize_performance()
 
         # Initialize trainer
         trainer = DistributedRadiologyTrainer(
             train_csv=args.train_csv,
             val_csv=args.val_csv,
             config=config,
-            device=device
+            device=device,
+            cache_dir=args.cache_dir
         )
 
         # Train model
         trainer.train(epochs=args.epochs)
 
-        # Evaluation phase
         if args.eval:
             logger.info("Starting evaluation...")
             evaluator = MedicalEvaluator(device)
-            
-            # Get validation predictions and references
             val_predictions, val_references, val_images = trainer.get_validation_data()
-            
-            # Run evaluation
             eval_results = evaluator.evaluate(
                 predictions=val_predictions,
                 references=val_references,
                 images=val_images
             )
-            
             logger.info(f"Evaluation Results: {eval_results}")
 
         # Deployment phase
@@ -90,12 +91,8 @@ def main():
                 device=device
             )
             
-            # Export to ONNX
             deployer.export_onnx('model.onnx')
-            
-            # Optimize for inference
             deployer.optimize_for_inference()
-            
             logger.info("Model deployed successfully")
 
     except Exception as e:
@@ -104,6 +101,9 @@ def main():
     finally:
         # Cleanup
         trainer.cleanup()
+        if 'trainer' in locals():
+            trainer.train_dataset.cleanup_cache()
+            trainer.val_dataset.cleanup_cache()
 
 if __name__ == "__main__":
     main()

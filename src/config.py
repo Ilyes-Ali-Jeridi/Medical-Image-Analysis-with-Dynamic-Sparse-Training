@@ -6,10 +6,11 @@ class Config:
     def __init__(self):
         # GPU and distributed training settings
         self.num_gpus = torch.cuda.device_count()
-        self.batch_size = 128 * self.num_gpus  # Scale with number of GPUs
+        self.batch_size = 256 * self.num_gpus  # Increased for NC48ads
         self.gradient_accumulation_steps = 4
         self.num_workers = 8 * self.num_gpus
         self.pin_memory = True
+        self.prefetch_factor = 2
         
         # Model architecture details
         self.image_size = 256
@@ -21,7 +22,7 @@ class Config:
         
         # Training parameters
         self.base_learning_rate = 2e-4
-        self.learning_rate = self.base_learning_rate * self.num_gpus  # Scale with GPUs
+        self.learning_rate = self.base_learning_rate * self.num_gpus
         self.weight_decay = 0.01
         self.max_epochs = 10
         self.warmup_steps = 1000
@@ -32,7 +33,9 @@ class Config:
         self.output_dir = Path("outputs")
         self.checkpoint_dir = self.output_dir / "checkpoints"
         self.log_dir = self.output_dir / "logs"
+        self.temp_dir = Path("/tmp/mimic_cache")
         
         # Create directories
-        for directory in [self.data_dir, self.output_dir, self.checkpoint_dir, self.log_dir]:
+        for directory in [self.data_dir, self.output_dir, self.checkpoint_dir, 
+                         self.log_dir, self.temp_dir]:
             directory.mkdir(parents=True, exist_ok=True)

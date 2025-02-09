@@ -5,16 +5,21 @@ from PIL import Image
 from torchvision import transforms
 import os
 from typing import Dict, Any
+import torch.multiprocessing
+torch.multiprocessing.set_sharing_strategy('file_system')
 
 class MIMICCXRDataset(Dataset):
-    """Dataset class for MIMIC-CXR with proper error handling."""
-    def __init__(self, csv_file: str, transform=None):
+    """Dataset class for MIMIC-CXR with proper error handling and caching."""
+    def __init__(self, csv_file: str, transform=None, cache_dir="/tmp/mimic_cache"):
         self.data = pd.read_csv(csv_file)
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(exist_ok=True)
         self.transform = transform or transforms.Compose([
             transforms.Resize((256, 256)),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.485], std=[0.229])
         ])
+        self.prefetch_factor = 2
         
     def __len__(self) -> int:
         return len(self.data)
@@ -23,7 +28,11 @@ class MIMICCXRDataset(Dataset):
         try:
             row = self.data.iloc[idx]
             image_path = row['image_path']
+            cache_path = self.cache_dir / f"{idx}.pt"
             
+            if cache_path.exists():
+                return torch.load(cache_path)
+                
             if not os.path.exists(image_path):
                 raise FileNotFoundError(f"Image not found: {image_path}")
                 
@@ -33,17 +42,25 @@ class MIMICCXRDataset(Dataset):
             report = row['report']
             labels = torch.tensor([float(x.strip()) for x in row['labels'].split(',')])
             
-            return {
+            sample = {
                 'image': image,
                 'report': report,
                 'labels': labels
             }
             
+            torch.save(sample, cache_path)
+            return sample
+            
         except Exception as e:
             print(f"Error loading sample {idx}: {str(e)}")
-            # Return a zero tensor with correct shape as fallback
             return {
                 'image': torch.zeros(1, 256, 256),
                 'report': "",
                 'labels': torch.zeros(5)
             }
+            
+    def cleanup_cache(self):
+        """Clean up cached files."""
+        import shutil
+        shutil.rmtree(self.cache_dir)
+        self.cache_dir.mkdir(exist_ok=True)

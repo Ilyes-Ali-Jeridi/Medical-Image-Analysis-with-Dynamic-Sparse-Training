@@ -1,3 +1,4 @@
+#models.py
 # Update the MedicalRAG class fusion mechanism
 class MedicalRAG(nn.Module):
     def __init__(self, vision_encoder=None, sparse_rate=0.4):

@@ -2,6 +2,7 @@ import os
 import torch
 import torch.distributed as dist
 import logging
+import gc
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class A100Optimizer:
         
         # Empty cache and trigger garbage collection
         torch.cuda.empty_cache()
+        gc.collect()
         
         return torch.device(f"cuda:{local_rank}")
     
