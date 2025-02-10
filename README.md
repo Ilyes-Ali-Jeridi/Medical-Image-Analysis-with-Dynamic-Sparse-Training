@@ -25,7 +25,7 @@ This project implements an advanced medical imaging system that combines:
 ## System Requirements
 
 - Azure NC48ads A100 v4 instance
-- 8x NVIDIA A100 GPUs (40GB each)
+- 4x NVIDIA A100 GPUs (40GB each)
 - 440GB System RAM
 - Ubuntu 20.04 or later
 - CUDA 11.8+
