@@ -44,24 +44,32 @@ class RadiologyDeployer:
             logger.error(f"Failed to load config: {str(e)}")
             raise
             
+    class RadiologyDeployer:
     def export_onnx(self, output_path: str, batch_size: int = 1):
-        """Export model to ONNX format."""
-        try:
-            dummy_input = torch.randn(batch_size, 1, 256, 256, device=self.device)
-            torch.onnx.export(
-                self.model,
-                dummy_input,
-                output_path,
-                export_params=True,
-                opset_version=12,
-                do_constant_folding=True,
-                input_names=['input'],
-                output_names=['output'],
-                dynamic_axes={
-                    'input': {0: 'batch_size'},
-                    'output': {0: 'batch_size'}
-                }
-            )
+        """ONNX export with dynamic axes"""
+        dynamic_axes = {
+            'input': {0: 'batch_size', 2: 'height', 3: 'width'},
+            'output': {0: 'batch_size'}
+        }
+        
+        dummy_input = torch.randn(
+            batch_size, 1, 
+            self.config.image_size, 
+            self.config.image_size,
+            device=self.device
+        )
+        
+        torch.onnx.export(
+            self.model,
+            dummy_input,
+            output_path,
+            opset_version=13,
+            do_constant_folding=True,
+            input_names=['input'],
+            output_names=['output'],
+            dynamic_axes=dynamic_axes
+        )
+
             
             # Verify exported model
             onnx_model = onnx.load(output_path)
