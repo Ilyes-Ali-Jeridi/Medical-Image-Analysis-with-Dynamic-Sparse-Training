@@ -24,11 +24,27 @@ class MIMICCXRDataset(Dataset):
     def __len__(self) -> int:
         return len(self.data)
     
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
-        try:
-            row = self.data.iloc[idx]
-            image_path = row['image_path']
-            cache_path = self.cache_dir / f"{idx}.pt"
+    class MIMICCXRDataset(Dataset):
+    def __init__(self, csv_file, transform=None, cache_dir="/tmp/mimic_cache"):
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(exist_ok=True, parents=True)
+        
+        # Safety check for cache directory
+        if not self.cache_dir.exists():
+            raise RuntimeError(f"Failed to create cache directory: {self.cache_dir}")
+            
+        # Load data with progress bar
+        self.data = pd.read_csv(csv_file, nrows=1000) if DEBUG else pd.read_csv(csv_file)
+        
+    def __getitem__(self, idx):
+        cache_path = self.cache_dir / f"{idx}.pt"
+        if cache_path.exists():
+            try:
+                data = torch.load(cache_path, map_location='cpu')  # Prevent GPU OOM
+                data['image'] = data['image'].to(torch.device('cuda'))
+                return data
+            except Exception as e:
+                print(f"Corrupted cache file {cache_path}: {e}")
             
             if cache_path.exists():
                 return torch.load(cache_path)
@@ -60,7 +76,6 @@ class MIMICCXRDataset(Dataset):
             }
             
     def cleanup_cache(self):
-        """Clean up cached files."""
-        import shutil
-        shutil.rmtree(self.cache_dir)
-        self.cache_dir.mkdir(exist_ok=True)
+        """Safe cache deletion with confirmation"""
+        if input("Delete all cached files? (y/n) ").lower() == 'y':
+            shutil.rmtree(self.cache_dir)
