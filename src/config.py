@@ -2,40 +2,30 @@ from pathlib import Path
 import torch
 
 class Config:
-    """Configuration for the medical imaging system."""
     def __init__(self):
-        # GPU and distributed training settings
+        # Hardware Settings
         self.num_gpus = torch.cuda.device_count()
-        self.batch_size = 256 * self.num_gpus  # Increased for NC48ads
-        self.gradient_accumulation_steps = 4
-        self.num_workers = 8 * self.num_gpus
-        self.pin_memory = True
-        self.prefetch_factor = 2
+        self.batch_size = 64  
+        self.gradient_accumulation_steps = 2
+        self.num_workers = min(8, os.cpu_count() // 2)
         
-        # Model architecture details
-        self.image_size = 256
+        # Model Architecture
+        self.image_size = 224  # Reduced for better memory usage
         self.patch_size = 16
         self.embed_dim = 768
         self.num_layers = 12
-        self.num_heads = 8
         self.sparse_rate = 0.4
         
-        # Training parameters
-        self.base_learning_rate = 2e-4
-        self.learning_rate = self.base_learning_rate * self.num_gpus
+        # Dynamic Learning Rate
+        self.base_lr = 2e-4
+        self.lr = self.base_lr * self.batch_size * self.gradient_accumulation_steps / 256
         self.weight_decay = 0.01
-        self.max_epochs = 10
-        self.warmup_steps = 1000
-        self.gradient_clip = 1.0
         
-        # Paths
+        # Paths (Safe Directory Creation)
         self.data_dir = Path("/data/MIMICCXR")
         self.output_dir = Path("outputs")
         self.checkpoint_dir = self.output_dir / "checkpoints"
-        self.log_dir = self.output_dir / "logs"
-        self.temp_dir = Path("/tmp/mimic_cache")
         
-        # Create directories
-        for directory in [self.data_dir, self.output_dir, self.checkpoint_dir, 
-                         self.log_dir, self.temp_dir]:
-            directory.mkdir(parents=True, exist_ok=True)
+        # Create directories safely
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.checkpoint_dir.mkdir(exist_ok=True)
