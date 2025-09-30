@@ -5,11 +5,16 @@ from transformers import BartForConditionalGeneration, BartTokenizer, AutoModel,
 import logging
 import faiss
 import numpy as np
+from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
 class DynamicSparseLayer(nn.Module):
-    """Implements dynamic sparse layer with error logging and proper initialization."""
+    """
+    A dynamically sparse layer that prunes weights based on magnitude.
+    This layer wraps a standard nn.Module and applies a mask to its weights,
+    which is updated periodically based on gradient information.
+    """
     def __init__(self, base_layer: nn.Module, sparsity: float = 0.3, update_freq: int = 100):
         super().__init__()
         if not 0 <= sparsity < 1:
@@ -30,6 +35,7 @@ class DynamicSparseLayer(nn.Module):
             raise
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Applies the masked weights to the input tensor."""
         try:
             effective_weight = self.base_layer.weight * self.mask
             if isinstance(self.base_layer, nn.Conv2d):
@@ -40,7 +46,7 @@ class DynamicSparseLayer(nn.Module):
             else:
                 return self.base_layer(x)
         except Exception as e:
-            logger.error(f"Forward pass failed: {str(e)}")
+            logger.error(f"Forward pass failed in DynamicSparseLayer: {str(e)}")
             raise
 
     def update_mask(self):
@@ -70,39 +76,46 @@ class DynamicSparseLayer(nn.Module):
             raise
 
 class MedicalViT(nn.Module):
-    """Vision Transformer optimized for medical imaging."""
-    def __init__(self, sparse_rate=0.4, img_size=256, patch_size=16,
-                 embed_dim=768, num_layers=12, num_heads=8):
+    """
+    Vision Transformer (ViT) tailored for medical imaging tasks.
+    It uses dynamic sparsity and is configurable via a central config object.
+    """
+    def __init__(self, config: Any):
         super().__init__()
+        self.config = config
         self.patch_embed = DynamicSparseLayer(
-            nn.Conv2d(1, embed_dim, kernel_size=patch_size, stride=patch_size),
-            sparsity=sparse_rate
+            nn.Conv2d(1, config.embed_dim, kernel_size=config.patch_size, stride=config.patch_size),
+            sparsity=config.sparse_rate
         )
-        self.pos_embed = nn.Parameter(torch.zeros(1, (img_size // patch_size) ** 2, embed_dim))
+        num_patches = (config.image_size // config.patch_size) ** 2
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, config.embed_dim))
+
         self.blocks = nn.ModuleList([
             nn.TransformerEncoderLayer(
-                d_model=embed_dim,
-                nhead=num_heads,
-                dim_feedforward=embed_dim * 4,
+                d_model=config.embed_dim,
+                nhead=8,  # Typically embed_dim // 64
+                dim_feedforward=config.embed_dim * 4,
                 dropout=0.1,
                 activation=F.gelu,
                 batch_first=True,
                 norm_first=True
-            ) for _ in range(num_layers)
+            ) for _ in range(config.num_layers)
         ])
-        self.norm = nn.LayerNorm(embed_dim)
+        self.norm = nn.LayerNorm(config.embed_dim)
         self.classifier_head = nn.Sequential(
-            DynamicSparseLayer(nn.Linear(embed_dim, embed_dim // 3), sparsity=sparse_rate),
+            DynamicSparseLayer(nn.Linear(config.embed_dim, config.embed_dim // 3), sparsity=config.sparse_rate),
             nn.GELU(),
             nn.Dropout(0.1),
-            nn.Linear(embed_dim // 3, 5)
+            nn.Linear(config.embed_dim // 3, 5) # 5 classes for classification
         )
         
-        # Initialize position embeddings
         nn.init.normal_(self.pos_embed, std=0.02)
         
-    def forward(self, x, return_both=False, return_features_only=False):
-        B = x.shape[0]
+    def forward(self, x: torch.Tensor, return_both: bool = False, return_features_only: bool = False):
+        """
+        Forward pass for the MedicalViT.
+        Can return classification logits, features, or both.
+        """
         x = self.patch_embed(x)
         x = x.flatten(2).transpose(1, 2)
         x = x + self.pos_embed
@@ -122,19 +135,23 @@ class MedicalViT(nn.Module):
             return self.classifier_head(features)
 
 class MedicalRAG(nn.Module):
-    """Retrieval-Augmented Generation for medical report generation."""
-    def __init__(self, vision_encoder=None, sparse_rate=0.4):
+    """
+    Retrieval-Augmented Generation (RAG) model for medical report generation.
+    It combines a vision encoder with a language model and a retrieval mechanism.
+    """
+    def __init__(self, config: Any, vision_encoder: nn.Module = None):
         super().__init__()
-        self.vision_encoder = vision_encoder if vision_encoder is not None else MedicalViT(sparse_rate=sparse_rate)
-        self.language_model = BartForConditionalGeneration.from_pretrained("facebook/bart-base")
-        self.tokenizer = BartTokenizer.from_pretrained("facebook/bart-base")
-        self.text_encoder = AutoModel.from_pretrained("allenai/radbert")
-        self.text_tokenizer = AutoTokenizer.from_pretrained("allenai/radbert")
+        self.config = config
+        self.vision_encoder = vision_encoder or MedicalViT(config)
+
+        self.language_model = BartForConditionalGeneration.from_pretrained(config.language_model_name)
+        self.tokenizer = BartTokenizer.from_pretrained(config.language_model_name)
+        self.text_encoder = AutoModel.from_pretrained(config.text_encoder_name)
+        self.text_tokenizer = AutoTokenizer.from_pretrained(config.text_encoder_name)
         
-        # Projection layers
         self.context_proj = nn.Sequential(
-            nn.Linear(768 * 2, 768),
-            nn.LayerNorm(768),
+            nn.Linear(config.embed_dim * 2, config.embed_dim),
+            nn.LayerNorm(config.embed_dim),
             nn.GELU(),
             nn.Dropout(0.1)
         )
@@ -143,18 +160,14 @@ class MedicalRAG(nn.Module):
         self.report_db = []
         
     def build_index(self, dataset_loader):
-        """Builds FAISS index for report retrieval."""
+        """Builds a FAISS index from the reports in the dataset for fast retrieval."""
         all_embeds = []
         device = next(self.text_encoder.parameters()).device
         
         for batch in dataset_loader:
             reports = batch['report']
             inputs = self.text_tokenizer(
-                reports,
-                padding=True,
-                truncation=True,
-                return_tensors="pt",
-                max_length=512
+                reports, padding=True, truncation=True, return_tensors="pt", max_length=512
             ).to(device)
             
             with torch.no_grad():
@@ -169,26 +182,21 @@ class MedicalRAG(nn.Module):
         faiss.normalize_L2(all_embeds)
         self.retrieval_index.add(all_embeds)
         
-    def retrieve_context(self, img_embed, k=3):
-        """Retrieves relevant reports based on image embeddings."""
-        if self.retrieval_index is None or len(self.report_db) == 0:
+    def retrieve_context(self, img_embed: torch.Tensor, k: int = 3) -> list:
+        """Retrieves k-nearest reports from the index based on image embeddings."""
+        if self.retrieval_index is None or not self.report_db:
             return [""] * img_embed.size(0)
             
-        img_embed_norm = img_embed / (img_embed.norm(dim=-1, keepdim=True) + 1e-8)
-        scores, indices = self.retrieval_index.search(
-            img_embed_norm.cpu().numpy(),
-            k
-        )
+        img_embed_norm = F.normalize(img_embed, p=2, dim=-1)
+        scores, indices = self.retrieval_index.search(img_embed_norm.cpu().numpy(), k)
         
-        context_reports = []
-        for idx in indices:
-            context = " ".join([self.report_db[i] for i in idx])
-            context_reports.append(context)
-            
-        return context_reports
+        return [" ".join([self.report_db[i] for i in idx]) for idx in indices]
     
-    def forward(self, images, target_reports=None, precomputed_features=None):
-        """Forward pass with optional precomputed features."""
+    def forward(self, images: torch.Tensor, target_reports: list = None, precomputed_features: torch.Tensor = None) -> Dict[str, Any]:
+        """
+        Forward pass for the RAG model.
+        Generates reports and calculates loss if target reports are provided.
+        """
         if precomputed_features is None:
             img_features = self.vision_encoder(images, return_features_only=True)
         else:
@@ -196,11 +204,7 @@ class MedicalRAG(nn.Module):
 
         context_reports = self.retrieve_context(img_features)
         context_tokens = self.tokenizer(
-            context_reports,
-            return_tensors="pt",
-            truncation=True,
-            max_length=128,
-            padding=True
+            context_reports, return_tensors="pt", truncation=True, max_length=128, padding=True
         ).to(images.device)
         
         with torch.no_grad():
@@ -211,43 +215,23 @@ class MedicalRAG(nn.Module):
         
         if target_reports is not None:
             target_tokens = self.tokenizer(
-                target_reports,
-                return_tensors="pt",
-                truncation=True,
-                padding="max_length",
-                max_length=128
+                target_reports, return_tensors="pt", truncation=True, padding="max_length", max_length=128
             ).to(images.device)
             
             outputs = self.language_model(
-                inputs_embeds=fused.unsqueeze(1),
-                labels=target_tokens.input_ids
+                inputs_embeds=fused.unsqueeze(1), labels=target_tokens.input_ids
             )
             
-            loss = outputs.loss
             gen_ids = self.language_model.generate(
-                inputs_embeds=fused.unsqueeze(1),
-                max_length=128,
-                num_beams=4,
-                temperature=0.9,
-                no_repeat_ngram_size=3
+                inputs_embeds=fused.unsqueeze(1), max_length=128, num_beams=4, temperature=0.9, no_repeat_ngram_size=3
             )
             
-            generated_reports = [
-                self.tokenizer.decode(g, skip_special_tokens=True)
-                for g in gen_ids
-            ]
+            generated_reports = self.tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
             
-            return {"loss": loss, "generated_reports": generated_reports}
+            return {"loss": outputs.loss, "generated_reports": generated_reports}
         else:
             gen_ids = self.language_model.generate(
-                inputs_embeds=fused.unsqueeze(1),
-                max_length=128,
-                num_beams=4,
-                temperature=0.9,
-                no_repeat_ngram_size=3
+                inputs_embeds=fused.unsqueeze(1), max_length=128, num_beams=4, temperature=0.9, no_repeat_ngram_size=3
             )
             
-            return [
-                self.tokenizer.decode(g, skip_special_tokens=True)
-                for g in gen_ids
-            ]
+            return {"generated_reports": self.tokenizer.batch_decode(gen_ids, skip_special_tokens=True)}

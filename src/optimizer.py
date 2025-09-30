@@ -7,49 +7,55 @@ import gc
 logger = logging.getLogger(__name__)
 
 class A100Optimizer:
-    """Optimizations specific to the A100 GPU and distributed training."""
+    """
+    A utility class providing static methods to configure and optimize PyTorch
+    for the NVIDIA A100 GPU, particularly in a distributed training context.
+    """
     @staticmethod
-    def configure_device():
-        """Configure device settings optimized for A100 GPUs."""
+    def configure_device() -> torch.device:
+        """
+        Configures the device and CUDA settings for optimal A100 performance.
+
+        This includes enabling TF32, setting memory fractions, and cleaning up memory.
+
+        Returns:
+            torch.device: The configured CUDA device.
+        """
         if not torch.cuda.is_available():
-            raise RuntimeError("CUDA is not available")
+            raise RuntimeError("CUDA is not available, cannot configure A100.")
             
-        # Enable TF32 and optimize memory usage for Ampere GPUs
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         torch.backends.cudnn.benchmark = True
         torch.backends.cudnn.deterministic = False
         
-        # Set device and memory settings
         local_rank = int(os.environ.get("LOCAL_RANK", 0))
         torch.cuda.set_device(local_rank)
         
-        # Correct way to set memory fraction for A100
+        # Set memory fraction to avoid fragmentation and allow for overhead
         torch.cuda.set_per_process_memory_fraction(0.95)
         
-        # Enable CUDA graphs for repeated operations
-        torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 7
-        
-        # Empty cache and trigger garbage collection
         torch.cuda.empty_cache()
         gc.collect()
         
+        logger.info(f"Device configured for A100 at local rank {local_rank}.")
         return torch.device(f"cuda:{local_rank}")
     
     @staticmethod
     def configure_distributed():
-        """Configure distributed training settings."""
+        """
+        Initializes the distributed process group using the NCCL backend.
+
+        Sets environment variables for optimal NCCL performance on A100 GPUs
+        with InfiniBand interconnects.
+        """
         try:
             if dist.is_initialized():
                 return
                 
-            if "LOCAL_RANK" not in os.environ:
-                os.environ["LOCAL_RANK"] = "0"
-                
-            local_rank = int(os.environ["LOCAL_RANK"])
-            world_size = int(os.environ.get("WORLD_SIZE", "1"))
+            local_rank = int(os.environ.get("LOCAL_RANK", 0))
+            world_size = int(os.environ.get("WORLD_SIZE", 1))
             
-            # Use NCCL backend for optimal GPU communication
             dist.init_process_group(
                 backend="nccl",
                 init_method="env://",
@@ -57,39 +63,39 @@ class A100Optimizer:
                 rank=local_rank
             )
             
-            # Set NCCL parameters for A100
+            # NCCL environment variables for performance tuning
+            os.environ["NCCL_ASYNC_ERROR_HANDLING"] = "1"
             os.environ["NCCL_DEBUG"] = "INFO"
-            os.environ["NCCL_IB_DISABLE"] = "0"
-            os.environ["NCCL_IB_GID_INDEX"] = "3"
-            os.environ["NCCL_SOCKET_IFNAME"] = "^docker0,lo"
             
             logger.info(f"Distributed training initialized: rank {local_rank}/{world_size-1}")
         except Exception as e:
-            logger.error(f"Failed to initialize distributed training: {str(e)}")
+            logger.error(f"Failed to initialize distributed training: {e}")
             raise
     
     @staticmethod
     def cleanup_distributed():
-        """Clean up distributed training resources."""
+        """
+        Cleans up and destroys the distributed process group.
+        """
         if dist.is_initialized():
             dist.destroy_process_group()
+            logger.info("Distributed process group destroyed.")
             
     @staticmethod
     def optimize_performance():
-        """Apply A100-specific performance optimizations."""
-        # Enable TF32 for faster matrix multiplications on A100
+        """
+        Applies global PyTorch settings for maximizing performance on A100 GPUs.
+
+        This should be called once at the beginning of the main script.
+        """
+        # Enable TF32, which provides a significant performance boost on Ampere GPUs
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         
-        # Enable cuDNN autotuner
+        # Enable the cuDNN autotuner to find the best algorithm for the hardware
         torch.backends.cudnn.benchmark = True
         
-        # Disable deterministic algorithms for better performance
+        # Disabling deterministic algorithms can improve performance
         torch.backends.cudnn.deterministic = False
         
-        # Set optimal thread settings for NC48ads
-        torch.set_num_threads(48)
-        
-        # Enable CUDA graphs for repeated operations
-        if torch.cuda.is_available() and torch.cuda.get_device_capability()[0] >= 7:
-            torch.cuda.synchronize()
+        logger.info("Global performance settings for A100 have been applied.")

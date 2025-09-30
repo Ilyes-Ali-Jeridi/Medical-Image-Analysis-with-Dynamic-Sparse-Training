@@ -1,110 +1,138 @@
-#evaluator.py
 import torch
 import nltk
 from nltk.translate.bleu_score import corpus_bleu
 import clip
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
+from torchvision.transforms.functional import to_pil_image
 import logging
+from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
 class MedicalEvaluator:
-    """Evaluator for medical reports using BLEU, CLIP, and CheXbert metrics."""
-    def __init__(self, device):
+    """
+    A class to evaluate generated medical reports using a suite of metrics:
+    BLEU, CLIP score, and CheXbert.
+    """
+    def __init__(self, device: torch.device):
+        """
+        Args:
+            device (torch.device): The device to run the models on (e.g., 'cuda' or 'cpu').
+        """
         self.device = device
         self._init_metrics()
         
     def _init_metrics(self):
-        """Initialize all evaluation metrics."""
+        """Initializes and loads all the necessary models for evaluation."""
         try:
-            # Initialize CLIP
             self.clip_model, self.clip_preprocess = clip.load("ViT-B/32", device=self.device)
             
-            # Initialize CheXbert
             self.chexbert_tokenizer = AutoTokenizer.from_pretrained("stanfordaimi/CheXbert")
             self.chexbert_model = AutoModelForSequenceClassification.from_pretrained("stanfordaimi/CheXbert")
             self.chexbert_model.to(self.device)
             
-            # Download NLTK data for BLEU
-            nltk.download('punkt')
+            nltk.download('punkt', quiet=True)
         except Exception as e:
-            logger.error(f"Failed to initialize metrics: {str(e)}")
+            logger.error(f"Failed to initialize metrics: {e}")
             raise
             
-    def calculate_bleu(self, predictions, references):
-        """Calculate BLEU score for generated reports."""
+    def calculate_bleu(self, predictions: List[str], references: List[str]) -> Dict[str, float]:
+        """
+        Calculates BLEU scores (1 to 4) for generated reports.
+
+        Args:
+            predictions (List[str]): A list of generated reports.
+            references (List[str]): A list of ground-truth reports.
+
+        Returns:
+            Dict[str, float]: A dictionary containing BLEU-1 to BLEU-4 scores.
+        """
+        if not predictions or not references:
+            return {'bleu1': 0.0, 'bleu2': 0.0, 'bleu3': 0.0, 'bleu4': 0.0}
+
         try:
-            # Tokenize predictions and references
             pred_tokens = [nltk.word_tokenize(pred.lower()) for pred in predictions]
             ref_tokens = [[nltk.word_tokenize(ref.lower())] for ref in references]
             
-            # Calculate BLEU-1 to BLEU-4
-            weights = [(1, 0, 0, 0), (0.5, 0.5, 0, 0), (0.33, 0.33, 0.33, 0), (0.25, 0.25, 0.25, 0.25)]
-            bleu_scores = []
+            weights = [(1, 0, 0, 0), (0.5, 0.5, 0, 0), (1/3, 1/3, 1/3, 0), (0.25, 0.25, 0.25, 0.25)]
+            scores = [corpus_bleu(ref_tokens, pred_tokens, w) for w in weights]
             
-            for weight in weights:
-                score = corpus_bleu(ref_tokens, pred_tokens, weights=weight)
-                bleu_scores.append(score)
-                
-            return {
-                'bleu1': bleu_scores[0],
-                'bleu2': bleu_scores[1],
-                'bleu3': bleu_scores[2],
-                'bleu4': bleu_scores[3]
-            }
+            return {f'bleu{i+1}': score for i, score in enumerate(scores)}
         except Exception as e:
-            logger.error(f"BLEU calculation failed: {str(e)}")
-            return None
+            logger.error(f"BLEU calculation failed: {e}")
+            return {}
+
+    def calculate_clip_score(self, images: List[torch.Tensor], texts: List[str]) -> float:
+        """
+        Calculates the CLIP score for image-text alignment.
+
+        Args:
+            images (List[torch.Tensor]): A list of image tensors.
+            texts (List[str]): A list of corresponding generated texts.
+
+        Returns:
+            float: The average CLIP similarity score.
+        """
+        if not images or not texts:
+            return 0.0
             
-    def calculate_clip_score(self, images, texts):
-        """Calculate CLIP score for image-text alignment."""
         try:
+            pil_images = [to_pil_image(img) for batch in images for img in batch]
+            processed_images = torch.stack([self.clip_preprocess(p) for p in pil_images]).to(self.device)
+
             with torch.no_grad():
-                # Preprocess images and encode
-                processed_images = torch.stack([self.clip_preprocess(img) for img in images]).to(self.device)
                 image_features = self.clip_model.encode_image(processed_images)
-                
-                # Encode text
                 text_tokens = clip.tokenize(texts).to(self.device)
                 text_features = self.clip_model.encode_text(text_tokens)
                 
-                # Normalize features
-                image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-                text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+                image_features /= image_features.norm(dim=-1, keepdim=True)
+                text_features /= text_features.norm(dim=-1, keepdim=True)
                 
-                # Calculate similarity
                 similarity = (image_features @ text_features.T).diagonal()
                 return similarity.mean().item()
         except Exception as e:
-            logger.error(f"CLIP score calculation failed: {str(e)}")
-            return None
+            logger.error(f"CLIP score calculation failed: {e}")
+            return 0.0
+
+    def calculate_chexbert_score(self, predictions: List[str]) -> Dict[str, float]:
+        """
+        Calculates CheXbert scores for medical accuracy of the generated reports.
+
+        Args:
+            predictions (List[str]): A list of generated reports.
+
+        Returns:
+            Dict[str, float]: A dictionary with the mean CheXbert score.
+        """
+        if not predictions:
+            return {'chexbert_mean': 0.0}
             
-    def calculate_chexbert_score(self, predictions):
-        """Calculate CheXbert scores for medical accuracy."""
         try:
             with torch.no_grad():
                 inputs = self.chexbert_tokenizer(
-                    predictions,
-                    padding=True,
-                    truncation=True,
-                    return_tensors="pt"
+                    predictions, padding=True, truncation=True, return_tensors="pt"
                 ).to(self.device)
                 
-                outputs = self.chexbert_model(**inputs)
-                scores = torch.sigmoid(outputs.logits)
-                
-                # Average across all medical conditions
-                return scores.mean(dim=1).cpu().numpy()
+                scores = torch.sigmoid(self.chexbert_model(**inputs).logits)
+                return {'chexbert_mean': scores.mean().item()}
         except Exception as e:
-            logger.error(f"CheXbert score calculation failed: {str(e)}")
-            return None
+            logger.error(f"CheXbert score calculation failed: {e}")
+            return {}
+
+    def evaluate(self, predictions: List[str], references: List[str], images: List[torch.Tensor]) -> Dict[str, Any]:
+        """
+        Runs a comprehensive evaluation using all configured metrics.
+
+        Args:
+            predictions (List[str]): The generated reports.
+            references (List[str]): The ground-truth reports.
+            images (List[torch.Tensor]): The input images.
             
-    def evaluate(self, predictions, references, images):
-        """Comprehensive evaluation using all metrics."""
-        results = {
+        Returns:
+            Dict[str, Any]: A dictionary containing the results from all metrics.
+        """
+        return {
             'bleu': self.calculate_bleu(predictions, references),
-            'clip': self.calculate_clip_score(images, predictions),
+            'clip_score': self.calculate_clip_score(images, predictions),
             'chexbert': self.calculate_chexbert_score(predictions)
         }
-        
-        return results

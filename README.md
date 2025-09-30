@@ -1,280 +1,152 @@
 # Medical Image Analysis with Dynamic Sparse Training
 
-A state-of-the-art system for medical image analysis using Dynamic Sparse Training (DST) for efficient processing of radiological images and automated report generation.
+This project provides a state-of-the-art system for medical image analysis, leveraging dynamic sparse training, Vision Transformers (ViT), and Retrieval-Augmented Generation (RAG) to process radiological images and generate automated reports. The system is optimized for multi-GPU distributed training on high-performance infrastructure like the Azure NC48ads A100 v4, ensuring both efficiency and accuracy.
 
-## Project Overview
+## Key Features
 
-This project implements an advanced medical imaging system that combines:
-- Dynamic Sparse Training for efficient model training
-- Vision Transformers for X-ray image analysis
-- Retrieval-Augmented Generation for report creation
-- Multi-GPU distributed training optimized for Azure NC48ads A100 v4
+- **Dynamic Sparse Training (DST):** Reduces computational overhead by dynamically pruning model weights during training, leading to faster and more efficient model execution.
+- **Vision Transformer (ViT):** Employs a state-of-the-art transformer-based architecture for high-accuracy medical image analysis.
+- **Retrieval-Augmented Generation (RAG):** Enhances report generation by retrieving relevant information from a knowledge base, ensuring contextually rich and accurate reports.
+- **Multi-GPU Optimization:** Built for distributed training on NVIDIA A100 GPUs, with optimizations for maximum performance.
+- **Comprehensive Evaluation:** Includes a suite of metrics—BLEU, CLIP score, and CheXbert—to assess report quality, image-text alignment, and medical accuracy.
 
 ## Table of Contents
 
-1. [System Requirements](#system-requirements)
-2. [Project Structure](#project-structure)
-3. [Installation](#installation)
-4. [Dataset Setup](#dataset-setup)
-5. [Training](#training)
-6. [Monitoring](#monitoring)
+1. [Architecture](#architecture)
+2. [Code Documentation](#code-documentation)
+3. [Issues Fixed](#issues-fixed)
+4. [System Requirements](#system-requirements)
+5. [Installation](#installation)
+6. [Usage](#usage)
 7. [Evaluation](#evaluation)
 8. [Deployment](#deployment)
 9. [Troubleshooting](#troubleshooting)
+10. [Citation](#citation)
+
+## Architecture
+
+The system is designed with a modular architecture that separates concerns and promotes maintainability. The key components are:
+
+- **Configuration (`config.py`):** Centralizes all hyperparameters, model settings, and paths, making it easy to configure and tune the system.
+- **Data Loading (`dataset.py`):** Manages the MIMIC-CXR dataset, with support for caching to accelerate data loading during training.
+- **Models (`models.py`):** Implements the core neural network architectures, including the `MedicalViT` for image analysis and the `MedicalRAG` for report generation.
+- **Training (`trainer.py`):** Orchestrates the distributed training process, handling the training loop, validation, and checkpointing.
+- **Optimization (`optimizer.py`):** Provides specialized optimizations for the NVIDIA A100 GPU, ensuring efficient training.
+- **Evaluation (`evaluator.py`):** Calculates a suite of metrics to assess the performance of the generated reports.
+- **Deployment (`deployer.py`):** Contains utilities for exporting the model to ONNX format and preparing it for inference.
+- **Main (`main.py`):** The entry point for the application, tying all components together.
+
+## Code Documentation
+
+The codebase is comprehensively documented with docstrings in all major classes and functions. Below is a high-level overview of the modules in the `src` directory:
+
+- **`config.py`:** Defines the `Config` class, which stores all hyperparameters and settings.
+- **`dataset.py`:** Implements the `MIMICCXRDataset` class for loading and caching data.
+- **`models.py`:** Contains the `MedicalViT` and `MedicalRAG` models, along with the `DynamicSparseLayer`.
+- **`trainer.py`:** Implements the `DistributedRadiologyTrainer` class for managing the training process.
+- **`optimizer.py`:** Provides the `A100Optimizer` class with static methods for GPU optimization.
+- **`evaluator.py`:** Implements the `MedicalEvaluator` class for calculating performance metrics.
+- **`deployer.py`:** Contains the `RadiologyDeployer` class for model deployment.
+- **`main.py`:** The main script that parses arguments and runs the training, evaluation, or deployment pipeline.
+
+## Issues Fixed
+
+This version of the codebase includes several fixes and enhancements to improve stability, flexibility, and usability:
+
+- **`NameError` in `config.py`:** Fixed by importing the `os` module.
+- **Hardcoded Paths:** The data directory in `config.py` is now configurable via an environment variable.
+- **Model Configurability:** Hardcoded model names and hyperparameters in `models.py` have been moved to the `Config` class.
+- **Trainer Inconsistencies:** Resolved a learning rate mismatch and standardized model access in `trainer.py`.
+- **Critical Errors in `dataset.py`:** Fixed conflicting class definitions, missing imports, and unsafe cache cleanup.
+- **Syntax Error in `deployer.py`:** Corrected a nested class definition and streamlined model loading.
+- **Comprehensive Documentation:** Added detailed docstrings to all classes and functions in the `src` directory.
 
 ## System Requirements
 
-- Azure NC48ads A100 v4 instance
-- 4x NVIDIA A100 GPUs (40GB each)
-- 440GB System RAM
-- Ubuntu 20.04 or later
-- CUDA 11.8+
-- Python 3.10+
-
-## Project Structure
-
-```
-.
-├── requirements.txt    # Project dependencies
-├── launch.sh          # Training launch script
-└── src/
-    ├── config.py      # Configuration management
-    ├── dataset.py     # MIMIC-CXR data handling
-    ├── models.py      # Core model implementations
-    ├── optimizer.py   # A100 GPU optimizations
-    ├── trainer.py     # Distributed training
-    ├── evaluator.py   # Performance metrics
-    ├── deployer.py    # Model deployment
-    └── main.py        # Entry point
-```
-
-### Component Details
-
-1. **models.py**
-   - `DynamicSparseLayer`: Implements adaptive sparse training
-   - `MedicalViT`: Vision Transformer for X-ray analysis
-   - `MedicalRAG`: Report generation with retrieval augmentation
-
-2. **trainer.py**
-   - Distributed training implementation
-   - Mixed precision training
-   - Gradient scaling and accumulation
-   - Checkpoint management
-
-3. **evaluator.py**
-   - BLEU score for text similarity
-   - CLIP score for image-text alignment
-   - CheXbert for medical accuracy
-
-4. **deployer.py**
-   - ONNX model export
-   - Inference optimization
-   - Batch prediction support
+- **Hardware:**
+  - Azure NC48ads A100 v4 instance (or equivalent)
+  - 4x NVIDIA A100 GPUs (40GB each)
+  - 440GB System RAM
+- **Software:**
+  - Ubuntu 20.04 or later
+  - CUDA 11.8+
+  - Python 3.10+
+  - Miniconda
 
 ## Installation
 
-1. **System Setup**
-   ```bash
-   # Update system
-   sudo apt-get update && sudo apt-get upgrade -y
-   
-   # Install system dependencies
-   sudo apt-get install -y build-essential git wget curl nvidia-cuda-toolkit
-   ```
+1.  **System Setup:**
+    ```bash
+    sudo apt-get update && sudo apt-get upgrade -y
+    sudo apt-get install -y build-essential git wget curl nvidia-cuda-toolkit
+    ```
 
-2. **Python Environment**
-   ```bash
-   # Install Miniconda
-   wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
-   bash Miniconda3-latest-Linux-x86_64.sh -b
-   echo 'export PATH="$HOME/miniconda3/bin:$PATH"' >> ~/.bashrc
-   source ~/.bashrc
+2.  **Python Environment:**
+    ```bash
+    wget https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh
+    bash Miniconda3-latest-Linux-x86_64.sh -b
+    echo 'export PATH="$HOME/miniconda3/bin:$PATH"' >> ~/.bashrc
+    source ~/.bashrc
 
-   # Create environment
-   conda create -n medical_env python=3.10 -y
-   conda activate medical_env
-   ```
+    conda create -n medical_env python=3.10 -y
+    conda activate medical_env
+    ```
 
-3. **Install Dependencies**
-   ```bash
-   # Install PyTorch
-   pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu118
+3.  **Install Dependencies:**
+    ```bash
+    pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu118
+    pip install -r requirements.txt
+    ```
 
-   # Install other requirements
-   pip install -r requirements.txt
-   ```
+## Usage
 
-## Dataset Setup
+The main entry point for the application is `src/main.py`, which is controlled via command-line arguments.
 
-### MIMIC-CXR Dataset Access
+### Training
 
-1. **Prerequisites**
-   - Complete PhysioNet credentialing process
-   - Visit: https://physionet.org/content/mimic-cxr/2.0.0/
-   - Obtain access credentials
+To start the training process, run the following command, replacing the CSV paths with your own:
 
-2. **Directory Setup**
-   ```bash
-   mkdir -p /data/MIMICCXR/{images,reports}
-   cd /data/MIMICCXR
-   ```
+```bash
+python -m src.main --train-csv /path/to/train.csv --val-csv /path/to/val.csv --epochs 20
+```
 
-3. **Download Dataset**
-   ```bash
-   # Download images (replace with your credentials)
-   wget -r -N -c -np --user <username> --ask-password \
-   https://physionet.org/files/mimic-cxr/2.0.0/files/
+### Evaluation
 
-   # Download reports
-   wget -r -N -c -np --user <username> --ask-password \
-   https://physionet.org/files/mimic-cxr/2.0.0/reports/
-   ```
+To run evaluation after training, add the `--eval` flag:
 
-4. **Organize Data**
-   ```bash
-   # Create organization script
-   cat > organize_data.sh << 'EOF'
-   #!/bin/bash
-   
-   # Move image files
-   find physionet.org/files/mimic-cxr/2.0.0/files/ -name "*.dcm" | while read file; do
-     rel_path=${file#physionet.org/files/mimic-cxr/2.0.0/files/}
-     mkdir -p "images/$(dirname $rel_path)"
-     mv "$file" "images/$rel_path"
-   done
+```bash
+python -m src.main --train-csv /path/to/train.csv --val-csv /path/to/val.csv --epochs 20 --eval
+```
 
-   # Move report files
-   find physionet.org/files/mimic-cxr/2.0.0/reports/ -name "*.txt" | while read file; do
-     rel_path=${file#physionet.org/files/mimic-cxr/2.0.0/reports/}
-     mkdir -p "reports/$(dirname $rel_path)"
-     mv "$file" "reports/$rel_path"
-   done
-   EOF
+### Deployment
 
-   chmod +x organize_data.sh
-   ./organize_data.sh
-   ```
+To export the model for deployment after training, add the `--deploy` flag:
 
-5. **Generate CSV Files**
-   ```bash
-   python3 src/tools/create_dataset_csv.py \
-     --image-dir /data/MIMICCXR/images \
-     --report-dir /data/MIMICCXR/reports \
-     --output-dir /data/MIMICCXR
-   ```
-
-## Training
-
-1. **Environment Setup**
-   ```bash
-   # Configure CUDA devices
-   export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
-   export MASTER_ADDR="localhost"
-   export MASTER_PORT="29500"
-   ```
-
-2. **Start Training**
-   ```bash
-   # Make launch script executable
-   chmod +x launch.sh
-
-   # Start distributed training
-   ./launch.sh
-   ```
-
-3. **Training Options**
-   ```bash
-   # Basic training
-   python src/main.py --train-csv train.csv --val-csv val.csv
-
-   # Training with evaluation
-   python src/main.py --train-csv train.csv --val-csv val.csv --eval
-
-   # Training and deployment
-   python src/main.py --train-csv train.csv --val-csv val.csv --eval --deploy
-   ```
-
-## Monitoring
-
-1. **GPU Monitoring**
-   ```bash
-   # Real-time GPU stats
-   watch -n 1 nvidia-smi
-
-   # GPU utilization history
-   nvidia-smi -l 1
-   ```
-
-2. **Training Progress**
-   ```bash
-   # View training logs
-   tail -f medical_training.log
-
-   # Monitor with Weights & Biases
-   wandb login
-   ```
-
-3. **System Monitoring**
-   ```bash
-   # Process monitoring
-   htop
-
-   # Disk usage
-   df -h
-
-   # Memory usage
-   free -h
-
-   # Network usage
-   iftop
-   ```
+```bash
+python -m src.main --train-csv /path/to/train.csv --val-csv /path/to/val.csv --deploy
+```
 
 ## Evaluation
 
-The system provides three evaluation metrics:
-- BLEU score for report generation quality
-- CLIP score for image-text alignment
-- CheXbert score for medical accuracy
+The system uses three key metrics to evaluate the quality of the generated reports:
 
-```bash
-# Run evaluation
-python src/main.py --eval \
-  --checkpoint-dir checkpoints \
-  --val-csv val.csv
-```
+- **BLEU:** Measures the similarity between the generated and reference reports.
+- **CLIP Score:** Assesses the alignment between the input image and the generated text.
+- **CheXbert:** Evaluates the medical accuracy of the report by checking for the presence of key clinical findings.
 
 ## Deployment
 
-1. **Export Model**
-   ```bash
-   python src/main.py --deploy \
-     --checkpoint-dir checkpoints \
-     --output-dir deployment
-   ```
-
-2. **Inference Optimization**
-   - Automatic TorchScript compilation
-   - ONNX export for deployment
-   - Batch prediction support
+The deployment process exports the vision encoder part of the model to the ONNX format, which is optimized for high-performance inference. To run deployment, use the `--deploy` flag as shown in the **Usage** section.
 
 ## Troubleshooting
 
-1. **Memory Issues**
-   - Reduce batch size in `config.py`
-   - Adjust gradient accumulation steps
-   - Monitor GPU memory usage
-
-2. **Training Issues**
-   - Check `medical_training.log`
-   - Verify dataset paths
-   - Ensure GPU availability
-
-3. **Performance Issues**
-   - Adjust number of workers
-   - Check GPU utilization
-   - Verify CUDA version
+- **Memory Issues:** If you encounter out-of-memory errors, try reducing the `batch_size` in `src/config.py`.
+- **Training Failures:** Check `medical_training.log` for detailed error messages.
+- **Performance Bottlenecks:** Ensure that the GPU drivers and CUDA version are up to date and that the system is configured as recommended.
 
 ## Citation
+
+If you use this work in your research, please cite the following:
 
 ```bibtex
 @article{Ilyesalijeridi2025,

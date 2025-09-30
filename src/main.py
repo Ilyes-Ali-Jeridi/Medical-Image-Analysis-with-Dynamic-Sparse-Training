@@ -1,109 +1,111 @@
-#main.py
-import os
+"""
+Main entry point for the medical imaging system.
+
+This script handles training, evaluation, and deployment of the RAG model
+for medical report generation. It ties together the configuration, data loading,
+training, and deployment components.
+"""
 import logging
 import torch
 from pathlib import Path
 import argparse
 import nltk
 
-# Download NLTK data at startup
+# Attempt to download NLTK data at startup, failing gracefully
 try:
     nltk.download('punkt', quiet=True)
 except Exception as e:
-    logging.error(f"Failed to download NLTK data: {str(e)}")
-    raise
+    logging.warning(f"Could not download NLTK 'punkt' package: {e}")
 
-from config import Config
-from trainer import DistributedRadiologyTrainer
-from optimizer import A100Optimizer
-from evaluator import MedicalEvaluator
-from deployer import RadiologyDeployer
+from .config import Config
+from .trainer import DistributedRadiologyTrainer
+from .optimizer import A100Optimizer
+from .evaluator import MedicalEvaluator
+from .deployer import RadiologyDeployer
 
 def setup_logging():
-    """Configure logging with proper formatting."""
+    """
+    Configures logging to output to both a file and the console.
+    """
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
-            logging.FileHandler('training.log'),
+            logging.FileHandler('medical_training.log'),
             logging.StreamHandler()
         ]
     )
 
 def main():
-    parser = argparse.ArgumentParser(description='Medical Image Training')
-    parser.add_argument('--train-csv', type=str, required=True, help='Path to training CSV')
-    parser.add_argument('--val-csv', type=str, required=True, help='Path to validation CSV')
-    parser.add_argument('--epochs', type=int, default=10, help='Number of epochs')
-    parser.add_argument('--eval', action='store_true', help='Run evaluation')
-    parser.add_argument('--deploy', action='store_true', help='Deploy model')
-    parser.add_argument('--checkpoint-dir', type=str, default='checkpoints', help='Checkpoint directory')
-    parser.add_argument('--cache-dir', type=str, default='/tmp/mimic_cache', help='Cache directory')
+    """
+    Main function to run the training, evaluation, and deployment pipeline.
+
+    Parses command-line arguments to control the workflow, initializes all
+    necessary components, and executes the requested stages.
+    """
+    parser = argparse.ArgumentParser(description='Medical Image Analysis with Dynamic Sparse Training')
+    parser.add_argument('--train-csv', type=str, required=True, help='Path to the training data CSV file.')
+    parser.add_argument('--val-csv', type=str, required=True, help='Path to the validation data CSV file.')
+    parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs.')
+    parser.add_argument('--eval', action='store_true', help='Run evaluation after training.')
+    parser.add_argument('--deploy', action='store_true', help='Run deployment after training.')
+    parser.add_argument('--checkpoint-dir', type=str, default='checkpoints', help='Directory to save model checkpoints.')
+    parser.add_argument('--cache-dir', type=str, default='/tmp/mimic_cache', help='Directory for caching dataset samples.')
     args = parser.parse_args()
 
-    # Setup logging
     setup_logging()
     logger = logging.getLogger(__name__)
+    trainer = None
 
     try:
-        setup_logging()
-        logger = logging.getLogger(__name__)
-        
-        # Initialize config
         config = Config()
-        
-        # Configure device and distributed training
         device = A100Optimizer.configure_device()
         A100Optimizer.optimize_performance()
 
-        # Initialize trainer
+        logger.info("Initializing trainer...")
         trainer = DistributedRadiologyTrainer(
             train_csv=args.train_csv,
             val_csv=args.val_csv,
             config=config,
-            device=device,
-            cache_dir=args.cache_dir
+            device=device
         )
 
-        # Train model
+        logger.info("Starting training...")
         trainer.train(epochs=args.epochs)
+        logger.info("Training complete.")
 
         if args.eval:
             logger.info("Starting evaluation...")
             evaluator = MedicalEvaluator(device)
-            val_predictions, val_references, val_images = trainer.get_validation_data()
-            eval_results = evaluator.evaluate(
-                predictions=val_predictions,
-                references=val_references,
-                images=val_images
-            )
-            logger.info(f"Evaluation Results: {eval_results}")
+            predictions, references, images = trainer.get_validation_data()
+            results = evaluator.evaluate(predictions, references, images)
+            logger.info(f"Evaluation Results: {results}")
 
-        # Deployment phase
         if args.deploy:
             logger.info("Starting deployment...")
-            latest_checkpoint = sorted(Path(args.checkpoint_dir).glob('*.pt'))[-1]
-            config_path = Path(args.checkpoint_dir) / 'deploy_config.json'
+            latest_checkpoint = max(Path(args.checkpoint_dir).glob('*.pt'), key=lambda p: p.stat().st_mtime)
             
             deployer = RadiologyDeployer(
                 model_path=str(latest_checkpoint),
-                config_path=str(config_path),
                 device=device
             )
             
-            deployer.export_onnx('model.onnx')
+            deployer.export_onnx('vision_encoder.onnx')
             deployer.optimize_for_inference()
-            logger.info("Model deployed successfully")
+            logger.info("Deployment artifacts created successfully.")
 
     except Exception as e:
-        logger.error(f"Training failed: {str(e)}")
+        logger.error(f"An unexpected error occurred: {e}", exc_info=True)
         raise
     finally:
-        # Cleanup
-        trainer.cleanup()
-        if 'trainer' in locals():
-            trainer.train_dataset.cleanup_cache()
-            trainer.val_dataset.cleanup_cache()
+        if trainer:
+            logger.info("Cleaning up resources...")
+            trainer.cleanup()
+            if hasattr(trainer, 'train_dataset'):
+                trainer.train_dataset.cleanup_cache()
+            if hasattr(trainer, 'val_dataset'):
+                trainer.val_dataset.cleanup_cache()
+            logger.info("Cleanup complete.")
 
 if __name__ == "__main__":
     main()

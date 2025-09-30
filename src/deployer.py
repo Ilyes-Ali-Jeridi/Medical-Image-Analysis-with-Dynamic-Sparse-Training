@@ -1,129 +1,129 @@
-#deployer.py
 import torch
 import onnx
 import logging
-from pathlib import Path
-import json
 from typing import Dict, Any
+
+# Assuming models.py and config.py are in the same directory or accessible
+from .models import MedicalRAG, MedicalViT
+from .config import Config
 
 logger = logging.getLogger(__name__)
 
 class RadiologyDeployer:
-    """Handles model deployment and serving for the medical imaging system."""
-    def __init__(self, model_path: str, config_path: str, device: torch.device):
+    """
+    Handles model deployment tasks, including loading, optimization,
+    and exporting for inference.
+    """
+    def __init__(self, model_path: str, device: torch.device):
+        """
+        Args:
+            model_path (str): Path to the trained model checkpoint (.pt file).
+            device (torch.device): The device to run the model on.
+        """
         self.device = device
-        self.model = self._load_model(model_path)
-        self.config = self._load_config(config_path)
+        self.model, self.config = self._load_model(model_path)
+
+    def _load_model(self, model_path: str) -> (torch.nn.Module, Config):
+        """
+        Loads a trained model and its configuration from a checkpoint.
         
-    def _load_model(self, model_path: str) -> torch.nn.Module:
-        """Load the trained model."""
+        Args:
+            model_path (str): The path to the model checkpoint.
+
+        Returns:
+            A tuple containing the loaded model and its configuration object.
+        """
         try:
             checkpoint = torch.load(model_path, map_location=self.device)
-            model_state = checkpoint['model_state_dict']
             config = checkpoint['config']
             
-            # Initialize model with saved config
-            from models import MedicalRAG, MedicalViT
-            vision_encoder = MedicalViT(sparse_rate=config.sparse_rate)
-            model = MedicalRAG(vision_encoder=vision_encoder, sparse_rate=config.sparse_rate)
-            model.load_state_dict(model_state)
+            vision_encoder = MedicalViT(config)
+            model = MedicalRAG(config, vision_encoder=vision_encoder)
+            model.load_state_dict(checkpoint['model_state_dict'])
             model.to(self.device)
             model.eval()
             
-            return model
+            logger.info(f"Model loaded successfully from {model_path}")
+            return model, config
         except Exception as e:
-            logger.error(f"Failed to load model: {str(e)}")
+            logger.error(f"Failed to load model from {model_path}: {e}")
             raise
             
-    def _load_config(self, config_path: str) -> Dict[str, Any]:
-        """Load deployment configuration."""
-        try:
-            with open(config_path, 'r') as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"Failed to load config: {str(e)}")
-            raise
-            
-    class RadiologyDeployer:
     def export_onnx(self, output_path: str, batch_size: int = 1):
-        """ONNX export with dynamic axes"""
-        dynamic_axes = {
-            'input': {0: 'batch_size', 2: 'height', 3: 'width'},
-            'output': {0: 'batch_size'}
-        }
+        """
+        Exports the vision encoder part of the model to ONNX format.
         
-        dummy_input = torch.randn(
-            batch_size, 1, 
-            self.config.image_size, 
-            self.config.image_size,
-            device=self.device
-        )
-        
-        torch.onnx.export(
-            self.model,
-            dummy_input,
-            output_path,
-            opset_version=13,
-            do_constant_folding=True,
-            input_names=['input'],
-            output_names=['output'],
-            dynamic_axes=dynamic_axes
-        )
+        Args:
+            output_path (str): Path to save the ONNX model.
+            batch_size (int): The batch size for the dummy input.
+        """
+        try:
+            dummy_input = torch.randn(
+                batch_size, 1, self.config.image_size, self.config.image_size,
+                device=self.device
+            )
 
+            # Export only the vision encoder, as the full RAG model is not ONNX-compatible
+            torch.onnx.export(
+                self.model.vision_encoder,
+                dummy_input,
+                output_path,
+                opset_version=13,
+                do_constant_folding=True,
+                input_names=['input'],
+                output_names=['features'],
+                dynamic_axes={'input': {0: 'batch_size'}, 'features': {0: 'batch_size'}}
+            )
             
-            # Verify exported model
             onnx_model = onnx.load(output_path)
             onnx.checker.check_model(onnx_model)
-            logger.info(f"Model exported to ONNX: {output_path}")
+            logger.info(f"Vision encoder exported to ONNX: {output_path}")
         except Exception as e:
-            logger.error(f"ONNX export failed: {str(e)}")
+            logger.error(f"ONNX export failed: {e}")
             raise
             
     def optimize_for_inference(self):
-        """Apply inference optimizations."""
+        """
+        Applies basic optimizations for inference by freezing model parameters.
+        """
         try:
             self.model.eval()
-            # Freeze model parameters
             for param in self.model.parameters():
                 param.requires_grad = False
-                
-            # Use torch.jit for optimization
-            self.model = torch.jit.script(self.model)
-            logger.info("Model optimized for inference")
+            logger.info("Model optimized for inference (parameters frozen).")
         except Exception as e:
-            logger.error(f"Model optimization failed: {str(e)}")
+            logger.error(f"Model optimization failed: {e}")
             raise
             
     def predict(self, image: torch.Tensor) -> Dict[str, Any]:
-        """Generate prediction for a single image."""
-        try:
-            with torch.no_grad():
-                image = image.to(self.device)
-                output = self.model(image)
-                return {
-                    'report': output,
-                    'success': True
-                }
-        except Exception as e:
-            logger.error(f"Prediction failed: {str(e)}")
-            return {
-                'success': False,
-                'error': str(e)
-            }
+        """
+        Generates a report for a single input image.
+
+        Args:
+            image (torch.Tensor): A single image tensor.
+
+        Returns:
+            A dictionary containing the generated report or an error message.
+        """
+        if image.dim() == 3:
+            image = image.unsqueeze(0) # Add batch dimension if missing
+
+        return self.batch_predict(image)
             
     def batch_predict(self, images: torch.Tensor) -> Dict[str, Any]:
-        """Generate predictions for a batch of images."""
+        """
+        Generates reports for a batch of images.
+
+        Args:
+            images (torch.Tensor): A batch of image tensors.
+
+        Returns:
+            A dictionary containing the generated reports or an error message.
+        """
         try:
             with torch.no_grad():
-                images = images.to(self.device)
-                outputs = self.model(images)
-                return {
-                    'reports': outputs,
-                    'success': True
-                }
+                outputs = self.model(images.to(self.device))
+                return {'reports': outputs['generated_reports'], 'success': True}
         except Exception as e:
-            logger.error(f"Batch prediction failed: {str(e)}")
-            return {
-                'success': False,
-                'error': str(e)
-            }
+            logger.error(f"Batch prediction failed: {e}")
+            return {'success': False, 'error': str(e)}
