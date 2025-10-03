@@ -319,12 +319,3 @@ python src/main.py --eval \
 4. **NLTK Data Issues**:
    - If you see errors related to 'punkt' tokenizer (e.g., in `MedicalEvaluator`), ensure NLTK data was downloaded successfully at startup. The script attempts to download it and exit if critical, but network issues or permissions might interfere. Manually run `python -m nltk.downloader punkt` in your environment.
 
-## Citation
-
-```bibtex
-@article{Ilyesalijeridi2025,
-  title={Dynamic Sparse Training for Multi-Modal Radiology},
-  author={Ilyes ali jeridi},
-  year={2025}
-}
-```
