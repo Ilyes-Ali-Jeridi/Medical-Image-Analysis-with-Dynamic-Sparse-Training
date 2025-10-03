@@ -24,12 +24,12 @@ This project implements an advanced medical imaging system that combines:
 
 ## System Requirements
 
-- Azure NC48ads A100 v4 instance
-- 4x NVIDIA A100 GPUs (40GB each)
-- 440GB System RAM
+- Azure NC48ads A100 v4 instance (or similar with NVIDIA A100 GPUs)
+- Recommended: 4x NVIDIA A100 GPUs (40GB each)
+- Recommended: 440GB System RAM
 - Ubuntu 20.04 or later
-- CUDA 11.8+
-- Python 3.10+
+- CUDA 11.8 or later (compatible with PyTorch version)
+- Python 3.10.x is recommended.
 
 ## Project Structure
 
@@ -50,26 +50,20 @@ This project implements an advanced medical imaging system that combines:
 
 ### Component Details
 
-1. **models.py**
-   - `DynamicSparseLayer`: Implements adaptive sparse training
-   - `MedicalViT`: Vision Transformer for X-ray analysis
-   - `MedicalRAG`: Report generation with retrieval augmentation
-
-2. **trainer.py**
-   - Distributed training implementation
-   - Mixed precision training
-   - Gradient scaling and accumulation
-   - Checkpoint management
-
-3. **evaluator.py**
-   - BLEU score for text similarity
-   - CLIP score for image-text alignment
-   - CheXbert for medical accuracy
-
-4. **deployer.py**
-   - ONNX model export
-   - Inference optimization
-   - Batch prediction support
+1.  **`src/config.py`**: Centralized configuration for paths, hardware, model hyperparameters, learning rates, and training settings.
+2.  **`src/dataset.py`**: Handles the MIMIC-CXR dataset, including preprocessing, caching, and a `DEBUG_MODE` for quick testing using a subset of data (activated by setting the `DEBUG_MODE=True` environment variable).
+3.  **`src/models.py`**:
+    *   `DynamicSparseLayer`: Implements adaptive sparse training for dynamic pruning and regrowing of connections.
+    *   `MedicalViT`: Vision Transformer adapted for X-ray image analysis.
+    *   `MedicalRAG`: Retrieval-Augmented Generation model for report creation. Includes FAISS index management for semantic search, with options for index persistence (`faiss_index_path`, `report_db_path` in `Config`).
+4.  **`src/optimizer.py`**:
+    *   `A100Optimizer`: Contains static methods to configure PyTorch for optimal performance on NVIDIA A100 GPUs (and other modern GPUs), including TF32 enablement, cuDNN settings, and distributed training setup. Manages GPU memory fraction (`cuda_memory_fraction`) and PyTorch threading (`torch_num_threads`) via `Config`.
+5.  **`src/trainer.py`**:
+    *   `DistributedRadiologyTrainer`: Orchestrates distributed training with DDP, Automatic Mixed Precision (AMP), gradient accumulation, and checkpointing (periodic and best model based on validation loss, configurable via `checkpoint_save_every_n_epochs` and `save_best_checkpoint` in `Config`).
+    *   **Critical Note**: This component has known issues regarding the complete and correct implementation of gradient accumulation and refined checkpointing logic (see [Troubleshooting](#troubleshooting)).
+6.  **`src/evaluator.py`**: Calculates BLEU, CLIP, and CheXbert scores for model evaluation.
+7.  **`src/deployer.py`**: Handles ONNX model export, inference optimization, and batch prediction.
+8.  **`src/main.py`**: Main entry point, parses command-line arguments (which can override `Config` settings for paths like `--data-dir`, `--output-dir`, etc.), sets up logging, and coordinates the training, evaluation, and deployment phases.
 
 ## Installation
 
@@ -167,32 +161,71 @@ This project implements an advanced medical imaging system that combines:
 
 1. **Environment Setup**
    ```bash
-   # Configure CUDA devices
-   export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7"
+   # Configure CUDA devices (example for 8 GPUs)
+   export CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" 
+   
+   # Master address and port for distributed training (if not using torchrun's defaults)
    export MASTER_ADDR="localhost"
    export MASTER_PORT="29500"
+
+   # Recommended NCCL environment variables for potentially better performance,
+   # especially on multi-node setups or specific network configurations.
+   # These should be set in your shell or launch.sh script.
+   # export NCCL_DEBUG="INFO" # Or "WARN" for less verbosity
+   # export NCCL_IB_DISABLE="0" # Set to 1 to disable InfiniBand if issues occur
+   # export NCCL_IB_GID_INDEX="3" # May vary depending on InfiniBand setup
+   # export NCCL_SOCKET_IFNAME="^docker0,lo" # Exclude docker and loopback interfaces
    ```
 
 2. **Start Training**
+   The `launch.sh` script is the recommended way to start distributed training.
    ```bash
    # Make launch script executable
    chmod +x launch.sh
 
-   # Start distributed training
+   # Start distributed training using torchrun (adjust nproc_per_node as per your GPUs)
+   # The launch.sh script should internally call src/main.py with appropriate arguments.
+   # Example content for launch.sh:
+   # #!/bin/bash
+   # torchrun --nproc_per_node=4 --nnodes=1 --master_addr=$MASTER_ADDR --master_port=$MASTER_PORT \
+   # src/main.py --train-csv train_split.csv --val-csv val_split.csv --epochs 10 --eval --deploy \
+   # --output-dir ./outputs_$(date +%Y%m%d_%H%M%S) \
+   # --log-file training_run.log 
+   # # Add other CLI arguments as needed.
+
    ./launch.sh
    ```
 
-3. **Training Options**
+3. **Training Options (Command-Line Overrides)**
+   The `src/main.py` script accepts various command-line arguments that can override settings from `src/config.py`.
    ```bash
-   # Basic training
-   python src/main.py --train-csv train.csv --val-csv val.csv
+   # Basic training with specific CSVs (epochs default to value in Config)
+   python src/main.py --train-csv train_split.csv --val-csv val_split.csv
 
-   # Training with evaluation
-   python src/main.py --train-csv train.csv --val-csv val.csv --eval
-
-   # Training and deployment
-   python src/main.py --train-csv train.csv --val-csv val.csv --eval --deploy
+   # Override epochs, output directory, and enable evaluation & deployment
+   python src/main.py \
+     --train-csv train_split.csv \
+     --val-csv val_split.csv \
+     --epochs 20 \
+     --eval \
+     --deploy \
+     --data-dir /path/to/your/MIMICCXR \
+     --output-dir /path/to/your/outputs \
+     --checkpoint-dir /path/to/your/checkpoints \
+     --cache-dir /path/to/your/cache \
+     --log-file training_custom.log
    ```
+   Refer to `src/main.py` (`parser.add_argument` calls) and `src/config.py` for all available options.
+
+### Configuration Highlights
+Key configuration settings managed in `src/config.py` (and overridable via CLI where applicable):
+- **Hardware**: `num_gpus`, `batch_size`, `gradient_accumulation_steps`, `num_workers`, `cuda_memory_fraction`, `torch_num_threads`.
+- **Model**: `image_size`, `patch_size`, `embed_dim`, `num_layers`, `sparse_rate`.
+- **Optimizer**: `base_lr` (and derived `lr`), `weight_decay`.
+- **Paths**: `data_dir`, `output_dir`, `checkpoint_dir`, `cache_dir`, `log_file`.
+- **Checkpointing**: `checkpoint_save_every_n_epochs`, `save_best_checkpoint`.
+- **Dataset**: `DEBUG_MODE` (environment variable `DEBUG_MODE=True` activates dataset debugging, using a smaller subset).
+- **FAISS Index**: `faiss_index_path`, `report_db_path` (in `MedicalRAG` constructor, typically set via `Config` if used globally).
 
 ## Monitoring
 
@@ -207,11 +240,13 @@ This project implements an advanced medical imaging system that combines:
 
 2. **Training Progress**
    ```bash
-   # View training logs
-   tail -f medical_training.log
+   # View training logs (path configured in config.py or via --log-file)
+   tail -f outputs/training.log # Or your custom log file path
 
-   # Monitor with Weights & Biases
-   wandb login
+   # Monitor with Weights & Biases (if enabled)
+   # Ensure you have logged in:
+   # wandb login
+   # Then view your project dashboard on the WandB website.
    ```
 
 3. **System Monitoring**
@@ -259,20 +294,30 @@ python src/main.py --eval \
 
 ## Troubleshooting
 
-1. **Memory Issues**
-   - Reduce batch size in `config.py`
-   - Adjust gradient accumulation steps
-   - Monitor GPU memory usage
+**CRITICAL KNOWN ISSUES (Require Manual Fixes):**
+- **Gradient Accumulation**: The gradient accumulation logic in `src/trainer.py` (within the `train` method and `train_step`) was not fully corrected in the last automated refactoring cycle. It requires careful review and modification to ensure gradients are correctly scaled, accumulated over the specified number of steps, and that optimizer steps/mask updates occur only after accumulation.
+- **Checkpointing Logic**: While configuration options for periodic and best-model checkpointing were added to `src/config.py`, the corresponding logic in `src/trainer.py` (specifically in the `train` and `save_checkpoint` methods) was not fully implemented or verified. This needs to be completed to ensure reliable checkpoint saving.
+
+1. **Memory Issues (CUDA OOM)**
+   - Reduce `batch_size` in `src/config.py`.
+   - Increase `gradient_accumulation_steps` in `src/config.py` (this effectively reduces memory per step at the cost of less frequent updates).
+   - Reduce `cuda_memory_fraction` in `src/config.py` if using `set_per_process_memory_fraction` (primarily for A100s).
+   - Monitor GPU memory usage with `nvidia-smi`.
 
 2. **Training Issues**
-   - Check `medical_training.log`
-   - Verify dataset paths
-   - Ensure GPU availability
+   - Check the log file (default: `outputs/training.log`) for detailed error messages.
+   - Verify dataset paths in `src/config.py` (or overridden via CLI) are correct and accessible.
+   - Ensure image and report files are correctly organized as per [Dataset Setup](#dataset-setup).
+   - Confirm GPU availability and that `CUDA_VISIBLE_DEVICES` is set correctly if used.
 
 3. **Performance Issues**
-   - Adjust number of workers
-   - Check GPU utilization
-   - Verify CUDA version
+   - Adjust `num_workers` in `src/config.py` for optimal data loading.
+   - Check GPU utilization with `nvidia-smi`. If low, data loading or CPU bottlenecks might be an issue.
+   - Verify CUDA and cuDNN versions are compatible with your PyTorch build.
+   - For multi-GPU, ensure NCCL environment variables are appropriately set for your system (see [Training - Environment Setup](#training)).
+
+4. **NLTK Data Issues**:
+   - If you see errors related to 'punkt' tokenizer (e.g., in `MedicalEvaluator`), ensure NLTK data was downloaded successfully at startup. The script attempts to download it and exit if critical, but network issues or permissions might interfere. Manually run `python -m nltk.downloader punkt` in your environment.
 
 ## Citation
 
